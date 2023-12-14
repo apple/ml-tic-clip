@@ -12,9 +12,9 @@ of CLIP Models](https://arxiv.org/abs/2310.16226).
 
 
 Our code is adapted from the 
-[DataComp](https://github.com/mlfoundations/datacomp) code and we use [Open 
-CLIP](https://github.com/mlfoundations/open_clip/tree/main/src/open_clip) for 
-continual training.   
+[DataComp](https://github.com/mlfoundations/datacomp) code and we use 
+[OpenCLIP](https://github.com/mlfoundations/open_clip/tree/main/src/open_clip) 
+for continual training.   
 
 ## How to prepare data
 
