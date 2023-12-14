@@ -12,7 +12,7 @@ of CLIP Models](https://arxiv.org/abs/2310.16226).
 
 
 Our code is adapted from the 
-[Datacomp](https://github.com/mlfoundations/datacomp) code and we use [Open 
+[DataComp](https://github.com/mlfoundations/datacomp) code and we use [Open 
 CLIP](https://github.com/mlfoundations/open_clip/tree/main/src/open_clip) for 
 continual training.   
 
@@ -65,9 +65,9 @@ Along with the images and captions, this script will also download metadata, inc
 ### Dynamic evaluation
 We create retrieval and classification evaluation datasets:
 
-- [TiC-Datacomp (Retrieval) Evaluation 
+- [TiC-DataComp (Retrieval) Evaluation 
 UIDs](https://docs-assets.developer.apple.com/ml-research/datasets/tic-clip/tic-datacomp_retrieval_evals_year2uids.pkl)
-- [TiC-Datacomp (Classification) Evaluation 
+- [TiC-DataComp (Classification) Evaluation 
 UIDs](https://docs-assets.developer.apple.com/ml-research/datasets/tic-clip/tic-datacompnet_year2uids.pkl)
 
 Examples from our evaluation datasets: 
