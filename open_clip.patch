@@ -1,0 +1,144 @@
+diff --git a/src/training/data.py b/src/training/data.py
+index 07b9fee..e5835af 100644
+--- a/src/training/data.py
++++ b/src/training/data.py
+@@ -19,6 +19,7 @@ from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler, IterableD
+ from torch.utils.data.distributed import DistributedSampler
+ from webdataset.filters import _shuffle
+ from webdataset.tariterators import base_plus_ext, url_opener, tar_file_expander, valid_sample
++from training.file_utils import check_exists, get_json_file
+ 
+ try:
+     import horovod.torch as hvd
+@@ -95,26 +96,37 @@ def expand_urls(urls, weights=None):
+ 
+ def get_dataset_size(shards):
+     shards_list, _ = expand_urls(shards)
+-    dir_path = os.path.dirname(shards_list[0])
+-    sizes_filename = os.path.join(dir_path, 'sizes.json')
+-    len_filename = os.path.join(dir_path, '__len__')
+-    if os.path.exists(sizes_filename):
+-        sizes = json.load(open(sizes_filename, 'r'))
+-        total_size = sum([int(sizes[os.path.basename(shard)]) for shard in shards_list])
+-    elif os.path.exists(len_filename):
+-        # FIXME this used to be eval(open(...)) but that seemed rather unsafe
+-        total_size = ast.literal_eval(open(len_filename, 'r').read())
+-    else:
+-        total_size = None  # num samples undefined
+-        # some common dataset sizes (at time of authors last download)
+-        # CC3M (train): 2905954
+-        # CC12M: 10968539
+-        # LAION-400M: 407332084
+-        # LAION-2B (english): 2170337258
++    total_size = 0
++
++    cache_sizes = {}
++    for shard in shards_list:
++        dir_path = os.path.dirname(shard)
++        if dir_path in cache_sizes:
++            sizes = cache_sizes[dir_path]
++            total_size += int(sizes[os.path.basename(shard)])
++        else:
++            sizes_filename = os.path.join(dir_path, 'sizes.json')
++            len_filename = os.path.join(dir_path, '__len__')
++            if check_exists(sizes_filename):
++                sizes = get_json_file(sizes_filename)
++                total_size += int(sizes[os.path.basename(shard)])
++                cache_sizes[dir_path] = sizes
++            elif os.path.exists(len_filename):
++                # FIXME this used to be eval(open(...)) but that seemed rather unsafe
++                total_size = ast.literal_eval(open(len_filename, 'r').read())
++            else:
++                total_size = None  # num samples undefined
++                # some common dataset sizes (at time of authors last download)
++                # CC3M (train): 2905954
++                # CC12M: 10968539
++                # LAION-400M: 407332084
++                # LAION-2B (english): 2170337258
+     num_shards = len(shards_list)
++    del cache_sizes
+     return total_size, num_shards
+ 
+ 
++
+ def get_imagenet(args, preprocess_fns, split):
+     assert split in ["train", "val", "v2"]
+     is_train = split == "train"
+@@ -336,6 +348,7 @@ def get_wds_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokeni
+             num_samples = args.train_num_samples
+         else:
+             num_samples, num_shards = get_dataset_size(input_shards)
++            logging.info(f"Obtained {num_samples} samples.")
+             if not num_samples:
+                 raise RuntimeError(
+                     'Currently, the number of dataset samples must be specified for the training dataset. '
+diff --git a/src/training/file_utils.py b/src/training/file_utils.py
+index 395cf7d..105c66b 100644
+--- a/src/training/file_utils.py
++++ b/src/training/file_utils.py
+@@ -6,6 +6,7 @@ import time
+ import fsspec
+ import torch
+ from tqdm import tqdm
++import simdjson
+ 
+ def remote_sync_s3(local_dir, remote_dir):
+     # skip epoch_latest which can change during sync.
+@@ -81,3 +82,9 @@ def check_exists(file_path):
+     except FileNotFoundError:
+         return False
+     return True
++
++
++def get_json_file(file_path):
++    with fsspec.open(file_path, 'rb') as f:
++        size_json = simdjson.load(f)
++    return size_json
+diff --git a/src/training/main.py b/src/training/main.py
+index 9449699..ba981fe 100644
+--- a/src/training/main.py
++++ b/src/training/main.py
+@@ -333,18 +333,23 @@ def main(args):
+ 
+     # optionally resume from a checkpoint
+     start_epoch = 0
++    new_run = args.new_run
+     if args.resume is not None:
+         checkpoint = pt_load(args.resume, map_location='cpu')
+         if 'epoch' in checkpoint:
+             # resuming a train checkpoint w/ epoch and optimizer state
+-            start_epoch = checkpoint["epoch"]
++            if not new_run:
++                # If not a new run, we want to ignore the checkpoint epoch
++                start_epoch = checkpoint["epoch"]
+             sd = checkpoint["state_dict"]
+             if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                 sd = {k[len('module.'):]: v for k, v in sd.items()}
+             model.load_state_dict(sd)
+-            if optimizer is not None:
++            if optimizer is not None and not new_run:
++                # If not a new run, we want to ignore the previous optimizer
+                 optimizer.load_state_dict(checkpoint["optimizer"])
+-            if scaler is not None and 'scaler' in checkpoint:
++            if scaler is not None and 'scaler' in checkpoint and not new_run:
++                # If not a new run, we want to ignore the previous scaler
+                 scaler.load_state_dict(checkpoint['scaler'])
+             logging.info(f"=> resuming checkpoint '{args.resume}' (epoch {start_epoch})")
+         else:
+diff --git a/src/training/params.py b/src/training/params.py
+index 3ea5a8f..a2264fa 100644
+--- a/src/training/params.py
++++ b/src/training/params.py
+@@ -257,6 +257,12 @@ def parse_args(args):
+         action="store_true",
+         help="calculate loss w/ local features @ global (instead of realizing full global @ global matrix)"
+     )
++    parser.add_argument(
++        "--new-run",
++        default=False,
++        action="store_true",
++        help="Whether this is a sequential run on new data"
++    )
+     parser.add_argument(
+         "--gather-with-grad",
+         default=False,

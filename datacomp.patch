@@ -1,0 +1,310 @@
+diff --git a/eval_utils/main.py b/eval_utils/main.py
+index 8b3ae94..d18a141 100644
+--- a/eval_utils/main.py
++++ b/eval_utils/main.py
+@@ -57,6 +57,26 @@ def evaluate_model(task_key, train_info, data_root, dataset_size, batch_size=64)
+             )
+         else:
+             metrics = {}
++    elif task_key.startswith("tic/"):
++        if "retrieval" in task_key:
++            metrics = evaluate_retrieval_dataset(
++                task_key,
++                train_info["scale_config"]["model"],
++                train_info["checkpoint"],
++                data_root=data_root,
++                batch_size=batch_size,
++            )
++        elif "datacompnet" in task_key:
++            metrics = evaluate_webdataset(
++                task_key,
++                train_info["scale_config"]["model"],
++                train_info["checkpoint"],
++                data_root=data_root,
++                dataset_len=dataset_size,
++                batch_size=batch_size,
++            )
++        else:
++            metrics = {}
+     else:
+         metrics = evaluate_webdataset(
+             task_key,
+diff --git a/eval_utils/retr_eval.py b/eval_utils/retr_eval.py
+index 3c19917..e80e9b2 100644
+--- a/eval_utils/retr_eval.py
++++ b/eval_utils/retr_eval.py
+@@ -8,7 +8,7 @@ import torch
+ from clip_benchmark.datasets.builder import image_captions_collate_fn
+ from clip_benchmark.metrics import zeroshot_retrieval as zsr
+ 
+-from .wds_eval import create_model
++from .wds_eval import create_model, create_webdataset
+ 
+ 
+ class RetrievalDataset(torch.utils.data.Dataset):
+@@ -35,23 +35,29 @@ def evaluate_retrieval_dataset(
+     model, transform, device = create_model(model_arch, model_path)
+     tokenizer = open_clip.get_tokenizer(model_arch)
+ 
+-    dataset = RetrievalDataset(
+-        datasets.load_dataset(
+-            f"nlphuji/{task.replace('retrieval/', '')}",
+-            split="test",
+-            cache_dir=os.path.join(data_root, "hf_cache")
+-            if data_root is not None
+-            else None,
+-        ),
+-        transform=transform,
+-    )
+-    dataloader = torch.utils.data.DataLoader(
+-        dataset,
+-        batch_size=batch_size,
+-        shuffle=False,
+-        num_workers=num_workers,
+-        collate_fn=image_captions_collate_fn,
+-    )
++    if task.startswith('tic/'):
++        # Load data
++        dataset, dataloader = create_webdataset(
++            task, transform, data_root, None, batch_size, num_workers
++        )
++    else:
++        dataset = RetrievalDataset(
++            datasets.load_dataset(
++                f"nlphuji/{task.replace('retrieval/', '')}",
++                split="test",
++                cache_dir=os.path.join(data_root, "hf_cache")
++                if data_root is not None
++                else None,
++            ),
++            transform=transform,
++        )
++        dataloader = torch.utils.data.DataLoader(
++            dataset,
++            batch_size=batch_size,
++            shuffle=False,
++            num_workers=num_workers,
++            collate_fn=image_captions_collate_fn,
++        )
+ 
+     metrics = zsr.evaluate(
+         model, dataloader, tokenizer, recall_k_list=[1, 5, 10], device=device
+diff --git a/eval_utils/wds_eval.py b/eval_utils/wds_eval.py
+index 50a178d..542be96 100644
+--- a/eval_utils/wds_eval.py
++++ b/eval_utils/wds_eval.py
+@@ -28,7 +28,22 @@ def create_webdataset(
+     task, transform, data_root=None, dataset_len=None, batch_size=64, num_workers=4
+ ):
+     data_folder = f"wds_{task.replace('/','-')}_test"
+-    if data_root is None:
++    split = "test"
++    wds_task = "zeroshot_classification"
++    if task.startswith('tic/'):
++        dsname = task.split('/')[-4]  # datacomp/yfcc15m/redcaps
++        ticeval = task.split('/')[-3]  # datacompnet/retrieval
++        timescale = task.split('/')[-2]  # yearly/monthly
++        timesplit = task.split('/')[-1]  # YYYY/YYYYMM
++        data_root = os.path.join(
++            data_root,
++            f"tic/{dsname}/{timescale}/eval/{ticeval}/{timesplit}",
++        )
++        split = ""
++        wds_task = "retrieval" if ticeval == "retrieval" else "zeroshot_classification"
++        with open(os.path.join(data_root, "count.txt"), "r") as f:
++            dataset_len = int(f.read())
++    elif data_root is None:
+         data_root = f"https://huggingface.co/datasets/djghosh/{data_folder}/tree/main"
+     else:
+         data_root = os.path.join(data_root, data_folder)
+@@ -36,8 +51,9 @@ def create_webdataset(
+         dataset_name=f"wds/{task}",
+         root=data_root,
+         transform=transform,
+-        split="test",
++        split=split,
+         download=False,
++        task=wds_task,
+     )
+     if dataset_len:
+         dataset = dataset.with_length((dataset_len + batch_size - 1) // batch_size)
+diff --git a/resharder.py b/resharder.py
+index 5f664fd..9e8f613 100644
+--- a/resharder.py
++++ b/resharder.py
+@@ -6,6 +6,7 @@ import copy
+ import logging
+ import multiprocessing as mp
+ import os
++import pickle
+ import queue
+ import re
+ import shutil
+@@ -413,6 +414,12 @@ def make_argparser():
+         required=True,
+         help="subset file, either a NumPy or memmap array of 128 bit hashes",
+     )
++    parser.add_argument(
++        "-c",
++        "--cls-file",
++        type=path_or_cloudpath,
++        help="class-id file, a Pickle file with mapping uid -> class-id (datacompnet)",
++    )
+     parser.add_argument(
+         "-n",
+         "--num-shards",
+@@ -800,6 +807,7 @@ def copy_worker(
+     input_dir: Pathy,
+     output_dir: Pathy,
+     subset_file: Path,
++    cls_file: Path,
+     shard_format: str = parser.get_default("shard_format"),
+     output_shard_format: str = parser.get_default("output_shard_format"),
+     output_shard_stats_format: str = parser.get_default("output_shard_stats_format"),
+@@ -818,6 +826,11 @@ def copy_worker(
+         return True
+ 
+     subset = load_subset(subset_file=subset_file)
++    uid2classid = None
++    if cls_file is not None:
++        # Load UID -> Class-id mapping for DataCompNet. The subset is relatively small
++        with open(cls_file, "rb") as f:
++            uid2classid = pickle.load(f)
+     ds = wds.DataPipeline(
+         wds.SimpleShardList(
+             [
+@@ -946,6 +959,8 @@ def copy_worker(
+                         d["json"] = simdjson.dumps(json).encode()
+ 
+             for j in range(count):
++                if uid2classid:
++                    d["cls"] = uid2classid[key_str]
+                 if not dry_run:
+                     yield {**d, "__key__": f"{key_str}-{j}"}
+ 
+@@ -1161,6 +1176,14 @@ def main(args):
+ 
+             args.subset_file = Path(f.name)
+ 
++        if isinstance(args.cls_file, CloudPath):
++            with args.cls_file.open("rb") as sf:
++                logger.info("copying remote class-id file to local machine")
++                shutil.copyfileobj(sf, f)
++                f.seek(0)
++
++            args.cls_file = Path(f.name)
++
+         if not args.dry_run:
+             with args.subset_file.open("rb") as sf:
+                 logger.info("copying the subset file to the output directory")
+diff --git a/scale_configs.py b/scale_configs.py
+index fb2ea7a..7b212a1 100644
+--- a/scale_configs.py
++++ b/scale_configs.py
+@@ -39,9 +39,42 @@ SCALE_CONFIGS = {
+         "model": "ViT-L-14",
+         "beta2": 0.95,
+     },
++    "tic_debug": {
++        "batch_size": 1024,
++        "learning_rate": 1e-4,
++        "train_num_samples": 1024*1000,
++        "warmup": 500,
++        "model": "ViT-B-32",
++        "beta2": None,
++    },
++    "tic_medium": {
++        "batch_size": 4096,
++        "learning_rate": 5e-4,
++        "train_num_samples": 4096*4500,
++        "warmup": 500,
++        "model": "ViT-B-32",
++        "beta2": None,
++    },
++    "tic_large": {
++        "batch_size": 8192,
++        "learning_rate": 5e-4,
++        "train_num_samples": 8192*22500,
++        "warmup": 500,
++        "model": "ViT-B-16",
++        "beta2": None,
++    },
++    "tic_xlarge": {
++        "batch_size": 90112,
++        "learning_rate": 1e-3,
++        "train_num_samples": 90112*20500,
++        "warmup": 10000,
++        "model": "ViT-B-16",
++        "beta2": None,
++    },
+ }
+ 
+-SIMPLE_NAMES = ["debug", "small", "medium", "large", "xlarge"]
++SIMPLE_NAMES = ["debug", "small", "medium", "large", "xlarge",
++                "tic_debug",  "tic_medium", "tic_large", "tic_xlarge"]
+ 
+ 
+ def available_scales(simple_names=False):
+diff --git a/train.py b/train.py
+index a7a5816..59c5bcd 100644
+--- a/train.py
++++ b/train.py
+@@ -177,6 +177,18 @@ if __name__ == "__main__":
+         help="Number of times we save checkpoints during training.",
+     )
+     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
++    parser.add_argument(
++        "--dataset_resampled",
++        default=False,
++        action="store_true",
++        help="Whether to use sampling with replacement for webdataset shard selection."
++    )
++    parser.add_argument(
++        "--new_run",
++        default=False,
++        action="store_true",
++        help="Whether this is a new run or not?"
++    )
+     parser.add_argument(
+         "--report_to_wandb",
+         default=False,
+@@ -215,6 +227,15 @@ if __name__ == "__main__":
+     )
+     parser.add_argument("--grad_clip_norm", type=float, default=None)
+     parser.add_argument("--save_frequency", type=int, default=0)
++    parser.add_argument(
++        "--warmup", type=int, default=None, help="Number of warm up iterations."
++    )
++    parser.add_argument(
++        "--train_num_samples",
++        type=int,
++        default=None,
++        help="Number of training samples. Overrides scale configs if not None."
++    )
+ 
+     args = parser.parse_args()
+     data_dir = args.data_dir
+@@ -226,10 +247,10 @@ if __name__ == "__main__":
+     config = get_scale_config(args.scale)
+     learning_rate = config["learning_rate"]
+     global_batch_size = config["batch_size"]
+-    warmup = config["warmup"]
++    warmup = args.warmup if args.warmup is not None else config["warmup"]
+     model = config["model"]
+     beta2 = config["beta2"]
+-    train_num_samples = config["train_num_samples"]
++    train_num_samples = args.train_num_samples or config["train_num_samples"]
+     train_data, weights = get_input_shards(data_dir, args.data_weights)
+ 
+     exp_name = args.exp_name if args.exp_name else f"{args.scale}_scale"
+@@ -280,6 +301,10 @@ if __name__ == "__main__":
+         f"{args.resume}",
+     ]
+     main_args.append("--dataset-resampled")
++    if args.new_run:
++        main_args.append("--new-run")
++    if args.dataset_resampled:
++        main_args.append("--dataset-resampled")
+     if args.report_to_wandb:
+         main_args.extend(
+             [
