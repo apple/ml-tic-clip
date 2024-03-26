@@ -346,7 +346,7 @@ If you find this repository useful or use this code in your research, please cit
 
 > Garg, S., Farajtabar, M., Pouransari, H., Vemulapalli, R., Mehta, S., Tuzel, O., Shankar, V. and Faghri, F., 2024. TiC-CLIP: Continual Training of CLIP Models. ICLR. 
 ```
-@proceedings{garg2024tic,
+@inproceedings{garg2024tic,
   title={TiC-CLIP: Continual Training of CLIP Models},
   author={Garg, Saurabh and Farajtabar, Mehrdad and Pouransari, Hadi and Vemulapalli, Raviteja and Mehta, Sachin and Tuzel, Oncel and Shankar, Vaishaal and Faghri, Fartash},
   booktitle={The Twelfth International Conference on Learning Representations (ICLR)},
