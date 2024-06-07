@@ -6,6 +6,7 @@ This repository contains training/evaluation code and data for the paper:
 
 **[TiC-CLIP: Continual Training of CLIP Models](https://arxiv.org/abs/2310.16226), Garg, S., Farajtabar, M., Pouransari, H., Vemulapalli, R., Mehta, S., Tuzel, O., Shankar, V. and Faghri, F., International Conference on Learning Representations (ICLR), 2024.**
 
+- **Update 2024/06/06:** TiC-DataComp data and TiC-CILP models are now available on HuggingFace in [TiC-CLIP Collection](https://huggingface.co/collections/apple/tic-clip-666097407ed2edff959276e0).
 - **Update 2024/03/19:** TiC-CLIP training/evaluation compatible with OpenCLIP/DataComp is released.
 - **Update 2024/03/19:** TiC-CLIP camera ready copy is now available on [Arxiv](https://arxiv.org/abs/2310.16226) and [OpenReview](https://openreview.net/forum?id=TLADT8Wrhn).
 - **Update 2024/01/16:** TiC-CLIP is accepted for poster presentation at [ICLR2024](https://iclr.cc), Vienna, Austria, May 7-11 2024.
